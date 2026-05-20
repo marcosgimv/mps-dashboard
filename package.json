@@ -1,0 +1,16 @@
+{
+  "name": "mps-dashboard",
+  "version": "1.0.0",
+  "description": "Maxi Padrón Sanchez — Dashboard de Análisis de Partidos",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
