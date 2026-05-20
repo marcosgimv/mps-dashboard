@@ -1,125 +1,143 @@
 const express = require('express');
-const fs = require('fs');
+const mongoose = require('mongoose');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DB_PATH = path.join(__dirname, 'partidos.json');
+const MONGODB_URI = process.env.MONGODB_URI;
 
 // ─── Middleware ────────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function readDB() {
-  try {
-    const raw = fs.readFileSync(DB_PATH, 'utf-8');
-    return JSON.parse(raw);
-  } catch (e) {
-    console.error('Error leyendo partidos.json:', e.message);
-    return [];
-  }
+// ─── Conexión a MongoDB Atlas ──────────────────────────────────────────────────
+if (!MONGODB_URI) {
+  console.error("❌ ERROR CRÍTICO: La variable de entorno MONGODB_URI no está configurada.");
+  process.exit(1);
 }
 
-function writeDB(data) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2), 'utf-8');
-}
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log('🔌 Conectado exitosamente a MongoDB Atlas'))
+  .catch(err => console.error('❌ Error al conectar a MongoDB:', err.message));
+
+// Definición del Esquema del Partido (Permite cualquier campo flexible como venías usando)
+const PartidoSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  colA: String,
+  medio: String,
+  fechaStr: String,
+  manera: String,
+  tipo: String,
+  modalidad: String,
+  rol: String,
+  equipo1: String,
+  gol1: String,
+  gol2: String,
+  equipo2: String,
+  competencia: String,
+  jornada: String,
+  estadio: String,
+  status: String,
+  isSpecial: Boolean,
+  isCustom: Boolean
+}, { strict: false, timestamps: true });
+
+const Partido = mongoose.model('Partido', PartidoSchema);
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
 
-// GET /api/partidos — devuelve todos los partidos
-app.get('/api/partidos', (req, res) => {
+// GET /api/partidos — Devuelve todos los partidos desde MongoDB
+app.get('/api/partidos', async (req, res) => {
   try {
-    const partidos = readDB();
+    const partidos = await Partido.find({}).lean();
     res.json({ ok: true, total: partidos.length, data: partidos });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// POST /api/partidos — reemplaza TODO el array (usado al importar con "reemplazar")
-app.post('/api/partidos', (req, res) => {
+// POST /api/partidos — REEMPLAZA todos los partidos (Usado en importación limpia)
+app.post('/api/partidos', async (req, res) => {
   try {
-    const body = req.body;
-    if (!Array.isArray(body)) {
+    const nuevosPartidos = req.body;
+    if (!Array.isArray(nuevosPartidos)) {
       return res.status(400).json({ ok: false, error: 'Se esperaba un array de partidos' });
     }
-    writeDB(body);
-    res.json({ ok: true, total: body.length, message: 'Base de datos actualizada correctamente' });
+    
+    // Borrar todo el contenido previo e insertar lo nuevo de manera atómica
+    await Partido.deleteMany({});
+    if (nuevosPartidos.length > 0) {
+      await Partido.insertMany(nuevosPartidos);
+    }
+    
+    res.json({ ok: true, total: nuevosPartidos.length, message: 'Base de datos reemplazada con éxito' });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// POST /api/partidos/merge — agrega los nuevos al array existente (importar "sumar")
-app.post('/api/partidos/merge', (req, res) => {
+// POST /api/partidos/merge — SUMA nuevos registros sin duplicar IDs existentes
+app.post('/api/partidos/merge', async (req, res) => {
   try {
-    const incoming = req.body;
-    if (!Array.isArray(incoming)) {
-      return res.status(400).json({ ok: false, error: 'Se esperaba un array de partidos' });
+    const nuevos = req.body;
+    if (!Array.isArray(nuevos)) {
+      return res.status(400).json({ ok: false, error: 'Se esperaba un array' });
     }
-    const existing = readDB();
-    // Dedup por id: preserva los existentes y agrega los que no estén
-    const existingIds = new Set(existing.map(p => p.id));
-    const newOnes = incoming.filter(p => !existingIds.has(p.id));
-    const merged = [...existing, ...newOnes];
-    writeDB(merged);
-    res.json({
-      ok: true,
-      total: merged.length,
-      added: newOnes.length,
-      message: `${newOnes.length} nuevos registros agregados. Total: ${merged.length}`
-    });
+    
+    let ingresados = 0;
+    for (const p of nuevos) {
+      if (!p.id) continue;
+      // upsert: true hace que si existe lo actualice, si no existe lo cree
+      await Partido.findOneAndUpdate({ id: p.id }, p, { upsert: true });
+      ingresados++;
+    }
+    
+    const totalActual = await Partido.countDocuments();
+    res.json({ ok: true, total: totalActual, insertedOrUpdated: ingresados });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// POST /api/partidos/one — agrega o actualiza un único partido
-app.post('/api/partidos/one', (req, res) => {
+// POST /api/partidos/one — Agrega o edita un único partido (Formulario manual)
+app.post('/api/partidos/one', async (req, res) => {
   try {
-    const partido = req.body;
-    if (!partido || typeof partido !== 'object') {
-      return res.status(400).json({ ok: false, error: 'Partido inválido' });
+    const { partido } = req.body;
+    if (!partidó || !partido.id) {
+      return res.status(400).json({ ok: false, error: 'Partido o ID inválido' });
     }
-    const partidos = readDB();
-    const idx = partidos.findIndex(p => p.id === partido.id);
-    if (idx >= 0) {
-      partidos[idx] = partido; // actualizar
-    } else {
-      partidos.push(partido);  // agregar
-    }
-    writeDB(partidos);
-    res.json({ ok: true, total: partidos.length, partido });
+    
+    const guardado = await Partido.findOneAndUpdate({ id: partido.id }, partido, { upsert: true, new: true });
+    const totalActual = await Partido.countDocuments();
+    
+    res.json({ ok: true, total: totalActual, partido: guardado });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// DELETE /api/partidos/:id — elimina un partido por id
-app.delete('/api/partidos/:id', (req, res) => {
+// DELETE /api/partidos/:id — Elimina un partido por su ID único
+app.delete('/api/partidos/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const partidos = readDB();
-    const filtered = partidos.filter(p => p.id !== id);
-    if (filtered.length === partidos.length) {
+    const resultado = await Partido.deleteOne({ id: id });
+    
+    if (resultado.deletedCount === 0) {
       return res.status(404).json({ ok: false, error: 'Partido no encontrado' });
     }
-    writeDB(filtered);
-    res.json({ ok: true, total: filtered.length, message: `Partido ${id} eliminado` });
+    
+    const totalActual = await Partido.countDocuments();
+    res.json({ ok: true, total: totalActual, message: `Partido con ID ${id} eliminado correctamente` });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// ─── Catch-all → SPA ──────────────────────────────────────────────────────────
+// ─── Catch-all → Redirección Frontend (SPA) ───────────────────────────────────
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`✅  MPS Dashboard corriendo en http://localhost:${PORT}`);
-  console.log(`📁  Base de datos: ${DB_PATH}`);
-  console.log(`📊  Partidos cargados: ${readDB().length}`);
+  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
 });
